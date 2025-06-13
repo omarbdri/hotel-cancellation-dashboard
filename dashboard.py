@@ -155,25 +155,11 @@ if data_source and st.session_state.last_file_identifier != source_id:
 if st.session_state.prediction_results is not None:
     prediction_results = st.session_state.prediction_results
     daily_data = st.session_state.daily_data
-
-    st.write("---")
-    st.subheader("Bookings Data Overview")
-    st.dataframe(daily_data.head())
     st.write("---")
     st.subheader("🚨 High-Risk Bookings Report")
 
-    risk_threshold = st.slider(
-      "Show bookings with risk score above:", 50, 100, 80
-    )
-
     high_risk_df = prediction_results[
-      (prediction_results["Prediction"] == "Canceled")
-      & (
-        prediction_results["Cancellation Risk Score"]
-        .str.rstrip("%")
-        .astype(float)
-        >= risk_threshold
-      )
+        (prediction_results["Prediction"] == "Canceled")
     ].sort_values(by="Cancellation Risk Score", ascending=False)
 
     # Display key metrics
@@ -184,33 +170,6 @@ if st.session_state.prediction_results is not None:
       len(high_risk_df),
       help="These are bookings predicted to be canceled.",
     )
-
-    # --- HISTOGRAM OF RISK SCORES ---
-    st.write("---")
-    st.subheader("Distribution of Risk Scores")
-
-    # Convert risk score to numeric for plotting.
-    hist_data = prediction_results.copy()
-    hist_data["risk_score_numeric"] = (
-        hist_data["Cancellation Risk Score"].str.rstrip("%").astype(float)
-    )
-
-    chart = (
-        alt.Chart(hist_data)
-        .mark_bar()
-        .encode(
-            alt.X(
-                "risk_score_numeric:Q",
-                bin=alt.Bin(step=5),
-                title="Cancellation Risk Score (%)",
-            ),
-            alt.Y("count()", title="Number of Bookings"),
-            tooltip=["count()"],
-        )
-        .properties(title="Distribution of Cancellation Risk Scores Across All Bookings")
-    )
-    st.altair_chart(chart, use_container_width=True)
-
 
     # Display the actionable table
     st.subheader("Actionable High-Risk Bookings List")
