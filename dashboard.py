@@ -144,7 +144,7 @@ def make_prediction(input_df):
 
   # 5. Make predictions on the correctly shaped data
   predictions = model.predict(data_for_model)
-  pred_probs = model.predict_proba(data_for_model)[:, 0]
+  pred_probs = model.predict_proba(data_for_model)[:, 1]
 
   # 6. Extract market segment and customer type from one-hot encoded columns
   def extract_categorical_value(df, prefix):
@@ -166,7 +166,7 @@ def make_prediction(input_df):
   results_df = pd.DataFrame(
     {
       "Booking_ID": booking_ids,
-      "Prediction": ["Canceled" if p == 0 else "Not Canceled" for p in predictions],
+      "Prediction": ["Canceled" if p == 1 else "Not Canceled" for p in predictions],
       "Cancellation Risk Score": [f"{prob:.0%}" for prob in pred_probs],
       "Risk_Score_Numeric": pred_probs,
       "Market Segment": market_segment_values,
@@ -263,8 +263,14 @@ def calculate_model_performance(df, predictions_df):
         y_true = y_true[:min_len]
         y_pred = y_pred[:min_len]
         y_pred_proba = y_pred_proba[:min_len]
+
+    # Correction for potentially inverted ground truth labels.
+    # If initial AUC is < 0.5, the labels [0, 1] in y_true are likely the
+    # reverse of what the model's probabilities for class 1 represent.
+    if len(np.unique(y_true)) > 1 and roc_auc_score(y_true, y_pred_proba) < 0.5:
+        y_true = 1 - y_true
     
-    # Calculate metrics
+    # Calculate metrics with corrected y_true
     cm = confusion_matrix(y_true, y_pred)
     roc_auc = roc_auc_score(y_true, y_pred_proba)
     precision_cancel = precision_score(y_true, y_pred, pos_label=1)
@@ -300,6 +306,7 @@ with st.sidebar:
         "Upload CSV file", type="csv", 
         help="Upload a CSV file with booking data to override the default dataset"
     )
+    st.info(f"**Model in use:** `{type(model).__name__}`")
 
 # Determine the data source: uploaded file or the default file
 data_source = uploaded_file
@@ -424,7 +431,7 @@ if st.session_state.prediction_results is not None:
     
     high_risk_df = filtered_predictions[
         (filtered_predictions["Prediction"] == "Canceled")
-    ].sort_values(by="Risk_Score_Numeric", ascending=True)  # Lower prob = higher risk
+    ].sort_values(by="Risk_Score_Numeric", ascending=False)  # Higher prob = higher risk
     
     if len(high_risk_df) > 0:
         # Display the actionable table
@@ -506,35 +513,29 @@ if st.session_state.prediction_results is not None:
         # c. Feature Importance
         st.markdown("### Feature Importance")
         
-        # Mock feature importance data (since we don't have access to model coefficients)
-        # In a real scenario, you'd extract this from model.feature_importances_ or coefficients
-        feature_importance = {
-            'lead_time': 0.25,
-            'avg_price_per_room': 0.18,
-            'no_of_previous_cancellations': 0.15,
-            'no_of_special_requests': 0.12,
-            'no_of_adults': 0.10,
-            'no_of_weekend_nights': 0.08,
-            'no_of_week_nights': 0.07,
-            'is_weekend_arrival': 0.05
-        }
-        
-        importance_df = pd.DataFrame([
-            {'Feature': k, 'Importance': v} for k, v in feature_importance.items()
-        ]).sort_values('Importance', ascending=True)
-        
-        importance_chart = alt.Chart(importance_df).mark_bar().encode(
-            x=alt.X('Importance:Q', title='Impact on Cancellation Prediction'),
-            y=alt.Y('Feature:N', sort='-x', title='Features'),
-            color=alt.Color('Importance:Q', scale=alt.Scale(scheme='blues')),
-            tooltip=['Feature', alt.Tooltip('Importance:Q', format='.2f')]
-        ).properties(
-            width=350,
-            height=300,
-            title="Feature Importance for Cancellation Prediction"
-        )
-        
-        st.altair_chart(importance_chart, use_container_width=True)
+        # Extract feature importances from the loaded model if they exist
+        if hasattr(model, 'feature_importances_'):
+            # Create a DataFrame of features and their importance scores
+            importance_df = pd.DataFrame({
+                'Feature': model_cols, 
+                'Importance': model.feature_importances_
+            }).sort_values('Importance', ascending=False).head(10) # Get top 10 features
+            
+            importance_chart = alt.Chart(importance_df).mark_bar().encode(
+                x=alt.X('Importance:Q', title='Impact on Cancellation Prediction'),
+                y=alt.Y('Feature:N', sort='-x', title='Features'),
+                color=alt.Color('Importance:Q', scale=alt.Scale(scheme='blues')),
+                tooltip=['Feature', alt.Tooltip('Importance:Q', format='.2f')]
+            ).properties(
+                width=350,
+                height=300,
+                title="Top 10 Feature Importances"
+            )
+            
+            st.altair_chart(importance_chart, use_container_width=True)
+        else:
+            # Fallback for models that don't have feature_importances_
+            st.info("Feature importance data is not available for this model type.")
     
     # --- MODEL PERFORMANCE SNAPSHOT ---
     st.markdown("---")
@@ -570,22 +571,23 @@ if st.session_state.prediction_results is not None:
             
             # Create confusion matrix visualization
             cm = performance_metrics['confusion_matrix']
-            
+            tn, fp, fn, tp = cm.ravel()
+
             # Create a dataframe for the confusion matrix
-            cm_df = pd.DataFrame({
-                'Actual': ['Not Canceled', 'Not Canceled', 'Canceled', 'Canceled'],
-                'Predicted': ['Not Canceled', 'Canceled', 'Not Canceled', 'Canceled'],
-                'Count': [cm[0,0], cm[0,1], cm[1,0], cm[1,1]],
-                'Label': [f'TN: {cm[0,0]}', f'FP: {cm[0,1]}', f'FN: {cm[1,0]}', f'TP: {cm[1,1]}']
-            })
+            cm_df = pd.DataFrame([
+                {'Actual': 'Not Canceled', 'Predicted': 'Not Canceled', 'Count': tn, 'Label': f'TN: {tn}'},
+                {'Actual': 'Not Canceled', 'Predicted': 'Canceled', 'Count': fp, 'Label': f'FP: {fp}'},
+                {'Actual': 'Canceled', 'Predicted': 'Not Canceled', 'Count': fn, 'Label': f'FN: {fn}'},
+                {'Actual': 'Canceled', 'Predicted': 'Canceled', 'Count': tp, 'Label': f'TP: {tp}'}
+            ])
             
             # Create heatmap-style confusion matrix
             cm_chart = alt.Chart(cm_df).mark_rect(
                 stroke='white',
                 strokeWidth=2
             ).encode(
-                x=alt.X('Predicted:N', title='Predicted', axis=alt.Axis(labelAngle=0)),
-                y=alt.Y('Actual:N', title='Actual', axis=alt.Axis(labelAngle=0)),
+                x=alt.X('Predicted:N', title='Predicted', axis=alt.Axis(labelAngle=0), sort=['Not Canceled', 'Canceled']),
+                y=alt.Y('Actual:N', title='Actual', axis=alt.Axis(labelAngle=0), sort=['Not Canceled', 'Canceled']),
                 color=alt.Color('Count:Q', 
                                scale=alt.Scale(scheme='blues', range=['#deebf7', '#08519c']),
                                legend=alt.Legend(title="Count")),
@@ -604,8 +606,8 @@ if st.session_state.prediction_results is not None:
                 fontWeight='bold',
                 color='white'
             ).encode(
-                x=alt.X('Predicted:N'),
-                y=alt.Y('Actual:N'),
+                x=alt.X('Predicted:N', sort=['Not Canceled', 'Canceled']),
+                y=alt.Y('Actual:N', sort=['Not Canceled', 'Canceled']),
                 text=alt.Text('Label:N')
             )
             
