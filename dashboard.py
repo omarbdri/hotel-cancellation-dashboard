@@ -104,7 +104,6 @@ def load_assets():
 
 model, preprocessor, preprocessor_cols, model_cols = load_assets()
 
-
 # --- HELPER FUNCTIONS ---
 def make_prediction(input_df):
   """
@@ -286,6 +285,27 @@ def calculate_model_performance(df, predictions_df):
         'target_col': target_col
     }
 
+def convert_standardized_to_original_leadtime(standardized_values):
+    """Convert standardized lead_time values back to original values using empirical mapping"""
+    # We know from the data:
+    # - Standardized min: -0.992 (roughly)
+    # - Standardized max: 4.162 (roughly)  
+    # - Original range: 0-13 days (as confirmed by user)
+    
+    std_min = -0.9921200019255964  # From your debug output
+    std_max = 4.161896980478907    # From your debug output
+    orig_min = 0                   # Original minimum (0 days)
+    orig_max = 13                  # Original maximum (13 days, as you confirmed)
+    
+    # Linear mapping from standardized to original
+    # Normalize standardized values to 0-1 range
+    normalized = (standardized_values - std_min) / (std_max - std_min)
+    
+    # Map to original range
+    original_values = normalized * (orig_max - orig_min) + orig_min
+    
+    return np.round(original_values).astype(int)
+
 # --- STREAMLIT UI ---
 st.title("🏨 Hotel Booking Cancellation Dashboard")
 st.markdown("Monitor and predict booking cancellations to improve revenue management")
@@ -354,20 +374,39 @@ if st.session_state.prediction_results is not None:
         )
     
     with col2:
-        # Lead time slider
-        lead_time_min = 0
-        lead_time_max = 365
-        if 'lead_time' in daily_data.columns:
-            lead_time_min = int(daily_data['lead_time'].min())
-            lead_time_max = int(daily_data['lead_time'].max())
-            
-        lead_time_range = st.slider(
-            "⏰ Lead Time (days)",
-            min_value=lead_time_min,
-            max_value=lead_time_max,
-            value=(lead_time_min, lead_time_max),
-            step=1
+        # Create a more user-friendly lead time selector using empirical conversion
+        st.markdown("**⏰ Lead Time Filter**")
+        
+        # Get standardized min/max values
+        std_min = float(daily_data['lead_time'].min())  # -0.992
+        std_max = float(daily_data['lead_time'].max())  # 4.162
+        
+        # Convert to original values for display (should be 0-13)
+        orig_min = convert_standardized_to_original_leadtime(std_min)
+        orig_max = convert_standardized_to_original_leadtime(std_max)
+        
+        # Let user select in original days (0-13)
+        orig_lead_time_range = st.slider(
+            "Select lead time range (days)",
+            min_value=int(orig_min),      # Should be 0
+            max_value=int(orig_max),      # Should be 13
+            value=(int(orig_min), int(orig_max)),
+            step=1,
+            help=f"Filter bookings by lead time in days (range: {orig_min}-{orig_max} days)"
         )
+        
+        # Convert user selection back to standardized values for filtering
+        # Reverse the linear mapping
+        norm_min = (orig_lead_time_range[0] - 0) / (13 - 0)  # normalize to 0-1
+        norm_max = (orig_lead_time_range[1] - 0) / (13 - 0)  # normalize to 0-1
+        
+        # Map back to standardized range
+        std_lead_min = (-0.9921200019255964) + norm_min * (4.161896980478907 - (-0.9921200019255964))
+        std_lead_max = (-0.9921200019255964) + norm_max * (4.161896980478907 - (-0.9921200019255964))
+        
+        lead_time_range = (std_lead_min, std_lead_max)
+        
+        st.caption(f"Selected: {orig_lead_time_range[0]} to {orig_lead_time_range[1]} days")
     
     # Set default date range for filtering (not displayed to user)
     date_range = (date(2023, 1, 1), date(2024, 12, 31))
